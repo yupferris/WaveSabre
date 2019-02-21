@@ -54,9 +54,9 @@ namespace WaveSabrePlayerLib
 
 		static const int NumChannels = 2;
 
-		static const int MaxTraceEvents = 1000000;
+		static const int MaxTraceEvents = 3000000;
 
-		SongRenderer(const SongRenderer::Song *song);
+		SongRenderer(const SongRenderer::Song *song, int numRenderThreads);
 		~SongRenderer();
 
 		void RenderSamples(Sample *buffer, int numSamples);
@@ -71,6 +71,13 @@ namespace WaveSabrePlayerLib
 		int renderSamplesCalls;
 
 		LARGE_INTEGER startCounter;
+
+		enum class RenderState
+		{
+			Idle,
+			Rendering,
+			Finished,
+		};
 
 	private:
 		enum class EventType
@@ -113,6 +120,7 @@ namespace WaveSabrePlayerLib
 		private:
 			static const int numBuffers = 4;
 
+		public:
 			typedef struct
 			{
 				int SendingTrackIndex;
@@ -172,6 +180,8 @@ namespace WaveSabrePlayerLib
 		float readFloat();
 		double readDouble();
 
+		static DWORD WINAPI threadProc(LPVOID lpParameter);
+
 		const unsigned char *songBlobPtr;
 		int songDataIndex;
 
@@ -187,7 +197,14 @@ namespace WaveSabrePlayerLib
 
 		int numTracks;
 		Track **tracks;
+		RenderState *states;
 
+		int numRenderThreads;
+		HANDLE *renderThreads;
+		CRITICAL_SECTION criticalSection;
+
+		bool shutdown;
+		int numFloatSamples;
 	};
 }
 

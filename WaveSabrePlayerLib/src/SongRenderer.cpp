@@ -4,7 +4,7 @@ using namespace WaveSabreCore;
 
 namespace WaveSabrePlayerLib
 {
-	SongRenderer::SongRenderer(const SongRenderer::Song *song)
+	SongRenderer::SongRenderer(const SongRenderer::Song *song, int numRenderThreads)
 	{
 		Helpers::Init();
 
@@ -55,32 +55,59 @@ namespace WaveSabrePlayerLib
 
 		numTracks = readInt();
 		tracks = new Track *[numTracks];
-		for (int i = 0; i < numTracks; i++) tracks[i] = new Track(this, song->factory);
+		states = new RenderState[numTracks];
+		for (int i = 0; i < numTracks; i++)
+		{
+			tracks[i] = new Track(this, song->factory);
+			states[i] = RenderState::Finished;
+		}
 
 		traceEvents = new TraceEvent[MaxTraceEvents];
 		traceEventIndex = 0;
 
 		renderSamplesCalls = 0;
 
+		InitializeCriticalSection(&criticalSection);
+		this->numRenderThreads = numRenderThreads;
+		renderThreads = new HANDLE[numRenderThreads];
+		shutdown = false;
+
+		for (int i = 0; i < numRenderThreads; i++)
+		{
+			renderThreads[i] = CreateThread(0, 0, threadProc, (LPVOID)this, 0, 0);
+			SetThreadPriority(renderThreads[i], THREAD_PRIORITY_HIGHEST);
+		}
+
 		QueryPerformanceCounter(&startCounter);
 	}
 
 	SongRenderer::~SongRenderer()
 	{
+		// We don't need to enter/leave a critical section here since we're the only writer at this point.
+		shutdown = true;
+
+		WaitForMultipleObjects(numRenderThreads, renderThreads, TRUE, INFINITE);
+		DeleteCriticalSection(&criticalSection);
+
+		delete [] renderThreads;
+
 		for (int i = 0; i < numDevices; i++) delete devices[i];
 		delete [] devices;
 
 		for (int i = 0; i < numMidiLanes; i++) delete midiLanes[i];
-		delete[] midiLanes;
+		delete [] midiLanes;
 
 		for (int i = 0; i < numTracks; i++) delete tracks[i];
 		delete [] tracks;
+		delete [] states;
 
-		delete[] traceEvents;
+		delete [] traceEvents;
 	}
 
 	void SongRenderer::RenderSamples(Sample *buffer, int numSamples)
 	{
+		MxcsrFlagGuard mxcsrFlagGuard;
+
 		LARGE_INTEGER endCounter, frequency;
 
 		QueryPerformanceCounter(&endCounter);
@@ -93,52 +120,27 @@ namespace WaveSabrePlayerLib
 			"Tracks",
 			"B",
 			elapsedTimeUs,
-			1234,
-			5678,
+			GetCurrentProcessId(),
+			GetCurrentThreadId(),
 			renderSamplesCalls,
 			0,
 		};
 
-		MxcsrFlagGuard mxcsrFlagGuard;
-
-		int numFloatSamples = numSamples / 2;
+		EnterCriticalSection(&criticalSection);
 
 		for (int i = 0; i < numTracks; i++)
-		{
-			QueryPerformanceCounter(&endCounter);
-			QueryPerformanceFrequency(&frequency);
-			elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
-			traceEvents[traceEventIndex++] =
-			{
-				TraceEventType::RenderTrack,
-				"Render",
-				"Tracks",
-				"B",
-				elapsedTimeUs,
-				1234,
-				5678,
-				0,
-				i,
-			};
+			states[i] = RenderState::Idle;
 
-			tracks[i]->Run(numFloatSamples);
+		numFloatSamples = numSamples / 2;
 
-			QueryPerformanceCounter(&endCounter);
-			QueryPerformanceFrequency(&frequency);
-			elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
-			traceEvents[traceEventIndex++] =
-			{
-				TraceEventType::RenderTrack,
-				"Render",
-				"Tracks",
-				"E",
-				elapsedTimeUs,
-				1234,
-				5678,
-				0,
-				i,
-			};
-		}
+		LeaveCriticalSection(&criticalSection);
+
+		// We don't need to enter/leave a critical section here since we're the only reader at this point.
+		//  However, if we don't want to sleep, entering/leaving a critical section here also works to not
+		//  starve the worker threads it seems. Sleeping feels like the better approach to reduce contention
+		//  though.
+		while (states[numTracks - 1] != RenderState::Finished)
+			Sleep(0);
 
 		float **masterTrackBuffers = tracks[numTracks - 1]->Buffers;
 		for (int i = 0; i < numSamples; i++)
@@ -159,13 +161,106 @@ namespace WaveSabrePlayerLib
 			"Tracks",
 			"E",
 			elapsedTimeUs,
-			1234,
-			5678,
+			GetCurrentProcessId(),
+			GetCurrentThreadId(),
 			renderSamplesCalls,
 			0,
 		};
 
 		renderSamplesCalls++;
+	}
+
+	DWORD WINAPI SongRenderer::threadProc(LPVOID lpParameter)
+	{
+		auto songRenderer = (SongRenderer *)lpParameter;
+
+		MxcsrFlagGuard mxcsrFlagGuard;
+
+		int nextTrackIndex = songRenderer->numTracks;
+
+		bool isRunning = true;
+		while (isRunning)
+		{
+			EnterCriticalSection(&songRenderer->criticalSection);
+
+			if (songRenderer->shutdown)
+				isRunning = false;
+
+			LARGE_INTEGER endCounter, frequency;
+
+			if (nextTrackIndex < songRenderer->numTracks)
+			{
+				QueryPerformanceCounter(&endCounter);
+				QueryPerformanceFrequency(&frequency);
+				auto elapsedTimeUs = (endCounter.QuadPart - songRenderer->startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+				songRenderer->traceEvents[songRenderer->traceEventIndex++] =
+				{
+					TraceEventType::RenderTrack,
+					"Render",
+					"Tracks",
+					"E",
+					elapsedTimeUs,
+					GetCurrentProcessId(),
+					GetCurrentThreadId(),
+					0,
+					nextTrackIndex,
+				};
+
+				songRenderer->states[nextTrackIndex] = RenderState::Finished;
+			}
+
+			nextTrackIndex = 0;
+			for (; nextTrackIndex < songRenderer->numTracks; nextTrackIndex++)
+			{
+				if (songRenderer->states[nextTrackIndex] != RenderState::Idle)
+					continue;
+
+				for (int i = 0; i < songRenderer->tracks[nextTrackIndex]->numReceives; i++)
+				{
+					if (songRenderer->states[songRenderer->tracks[nextTrackIndex]->receives[i].SendingTrackIndex] != RenderState::Finished)
+						goto cnt;
+				}
+
+				// We have a free track yeeeey
+				break;
+
+			cnt:;
+			}
+
+			if (nextTrackIndex < songRenderer->numTracks)
+			{
+				songRenderer->states[nextTrackIndex] = RenderState::Rendering;
+
+				QueryPerformanceCounter(&endCounter);
+				QueryPerformanceFrequency(&frequency);
+				auto elapsedTimeUs = (endCounter.QuadPart - songRenderer->startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+				songRenderer->traceEvents[songRenderer->traceEventIndex++] =
+				{
+					TraceEventType::RenderTrack,
+					"Render",
+					"Tracks",
+					"B",
+					elapsedTimeUs,
+					GetCurrentProcessId(),
+					GetCurrentThreadId(),
+					0,
+					nextTrackIndex,
+				};
+			}
+
+			LeaveCriticalSection(&songRenderer->criticalSection);
+
+			if (nextTrackIndex < songRenderer->numTracks)
+			{
+				songRenderer->tracks[nextTrackIndex]->Run(songRenderer->numFloatSamples);
+			}
+			else
+			{
+				Sleep(0);
+			}
+		}
+
+		return 0;
 	}
 
 	int SongRenderer::GetTempo() const
