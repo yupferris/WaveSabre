@@ -21,6 +21,7 @@ namespace WaveSabrePlayerLib
 		static void writeInt(int i, FILE *file);
 		static void writeShort(short s, FILE *file);
 
+	public:
 		SongRenderer *songRenderer;
 	};
 }

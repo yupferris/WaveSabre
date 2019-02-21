@@ -34,7 +34,27 @@ namespace WaveSabrePlayerLib
 
 		typedef short Sample;
 
+		enum class TraceEventType
+		{
+			RenderSamples,
+			RenderTrack,
+		};
+
+		typedef struct {
+			TraceEventType type;
+			const char *name;
+			const char *category;
+			const char *ph;
+			long long ts;
+			unsigned int pid;
+			unsigned int tid;
+			unsigned int renderSamplesCount;
+			unsigned int trackId;
+		} TraceEvent;
+
 		static const int NumChannels = 2;
+
+		static const int MaxTraceEvents = 1000000;
 
 		SongRenderer(const SongRenderer::Song *song);
 		~SongRenderer();
@@ -44,6 +64,13 @@ namespace WaveSabrePlayerLib
 		int GetTempo() const;
 		int GetSampleRate() const;
 		double GetLength() const;
+
+		TraceEvent *traceEvents;
+		int traceEventIndex;
+
+		int renderSamplesCalls;
+
+		LARGE_INTEGER startCounter;
 
 	private:
 		enum class EventType
@@ -133,6 +160,7 @@ namespace WaveSabrePlayerLib
 			int numAutomations;
 			Automation **automations;
 
+		public:
 			int lastSamplePos;
 			int accumEventTimestamp;
 			int eventIndex;

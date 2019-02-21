@@ -30,6 +30,32 @@ int main(int argc, char **argv)
 		wavWriter.Write(fileName, progressCallback, nullptr);
 
 		printf("\n\nWAV file written to \"%s\". Enjoy.\n", fileName);
+
+		auto traceFileName = argv[3];
+		auto file = fopen(traceFileName, "wb");
+
+		fprintf(file, "[\n");
+
+		for (int i = 0; i < wavWriter.songRenderer->traceEventIndex; i++)
+		{
+			auto e = &wavWriter.songRenderer->traceEvents[i];
+
+			switch (e->type)
+			{
+			case SongRenderer::TraceEventType::RenderSamples:
+				fprintf(file, "{\"name\":\"%s samples %d\",\"cat\":\"%s\",\"ph\":\"%s\",\"ts\":%I64d,\"pid\":%d,\"tid\":%d}%s\n", e->name, e->renderSamplesCount, e->category, e->ph, e->ts, e->pid, e->tid, i != wavWriter.songRenderer->traceEventIndex - 1 ? "," : "");
+				break;
+			case SongRenderer::TraceEventType::RenderTrack:
+				fprintf(file, "{\"name\":\"%s track %d\",\"cat\":\"%s\",\"ph\":\"%s\",\"ts\":%I64d,\"pid\":%d,\"tid\":%d}%s\n", e->name, e->trackId, e->category, e->ph, e->ts, e->pid, e->tid, i != wavWriter.songRenderer->traceEventIndex - 1 ? "," : "");
+				break;
+			}
+		}
+
+		fprintf(file, "]\n");
+
+		fclose(file);
+
+		printf("\n\nTrace file written to \"%s\". Enjoy.\n", traceFileName);
 	}
 	else
 	{

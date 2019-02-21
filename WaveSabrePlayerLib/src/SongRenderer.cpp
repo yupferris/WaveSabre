@@ -56,6 +56,13 @@ namespace WaveSabrePlayerLib
 		numTracks = readInt();
 		tracks = new Track *[numTracks];
 		for (int i = 0; i < numTracks; i++) tracks[i] = new Track(this, song->factory);
+
+		traceEvents = new TraceEvent[MaxTraceEvents];
+		traceEventIndex = 0;
+
+		renderSamplesCalls = 0;
+
+		QueryPerformanceCounter(&startCounter);
 	}
 
 	SongRenderer::~SongRenderer()
@@ -68,15 +75,70 @@ namespace WaveSabrePlayerLib
 
 		for (int i = 0; i < numTracks; i++) delete tracks[i];
 		delete [] tracks;
+
+		delete[] traceEvents;
 	}
 
 	void SongRenderer::RenderSamples(Sample *buffer, int numSamples)
 	{
+		LARGE_INTEGER endCounter, frequency;
+
+		QueryPerformanceCounter(&endCounter);
+		QueryPerformanceFrequency(&frequency);
+		auto elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+		traceEvents[traceEventIndex++] =
+		{
+			TraceEventType::RenderSamples,
+			"Render",
+			"Tracks",
+			"B",
+			elapsedTimeUs,
+			1234,
+			5678,
+			renderSamplesCalls,
+			0,
+		};
+
 		MxcsrFlagGuard mxcsrFlagGuard;
 
 		int numFloatSamples = numSamples / 2;
 
-		for (int i = 0; i < numTracks; i++) tracks[i]->Run(numFloatSamples);
+		for (int i = 0; i < numTracks; i++)
+		{
+			QueryPerformanceCounter(&endCounter);
+			QueryPerformanceFrequency(&frequency);
+			elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+			traceEvents[traceEventIndex++] =
+			{
+				TraceEventType::RenderTrack,
+				"Render",
+				"Tracks",
+				"B",
+				elapsedTimeUs,
+				1234,
+				5678,
+				0,
+				i,
+			};
+
+			tracks[i]->Run(numFloatSamples);
+
+			QueryPerformanceCounter(&endCounter);
+			QueryPerformanceFrequency(&frequency);
+			elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+			traceEvents[traceEventIndex++] =
+			{
+				TraceEventType::RenderTrack,
+				"Render",
+				"Tracks",
+				"E",
+				elapsedTimeUs,
+				1234,
+				5678,
+				0,
+				i,
+			};
+		}
 
 		float **masterTrackBuffers = tracks[numTracks - 1]->Buffers;
 		for (int i = 0; i < numSamples; i++)
@@ -86,6 +148,24 @@ namespace WaveSabrePlayerLib
 			if (sample > 32767) sample = 32767;
 			buffer[i] = (Sample)sample;
 		}
+
+		QueryPerformanceCounter(&endCounter);
+		QueryPerformanceFrequency(&frequency);
+		elapsedTimeUs = (endCounter.QuadPart - startCounter.QuadPart) * 1000000 / frequency.QuadPart;
+		traceEvents[traceEventIndex++] =
+		{
+			TraceEventType::RenderSamples,
+			"Render",
+			"Tracks",
+			"E",
+			elapsedTimeUs,
+			1234,
+			5678,
+			renderSamplesCalls,
+			0,
+		};
+
+		renderSamplesCalls++;
 	}
 
 	int SongRenderer::GetTempo() const
