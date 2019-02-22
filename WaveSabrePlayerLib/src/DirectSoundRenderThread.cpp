@@ -18,9 +18,8 @@ namespace WaveSabrePlayerLib
 
 	DirectSoundRenderThread::~DirectSoundRenderThread()
 	{
-		EnterCriticalSection(&criticalSection);
+		// We don't need to enter/leave a critical section here since we're the only writer at this point.
 		shutdown = true;
-		LeaveCriticalSection(&criticalSection);
 
 		WaitForSingleObject(thread, INFINITE);
 		DeleteCriticalSection(&criticalSection);
